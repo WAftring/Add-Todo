@@ -10,7 +10,6 @@
 
 #region PRIVATE
 function Get-TodoFile {
-    # TODO(will): Use registry instead of env variables
     $TodotxtPath = [System.Environment]::GetEnvironmentVariable("todotxt", "User")
     if($null -eq $TodotxtPath){
         $TodotxtPath = $ENV:HOME + "\todo.txt"
@@ -45,22 +44,27 @@ function Add-Todo {
     param(
         [string]$Item,
         [string]$Severity,
-        [string]$DueDate,
-        [switch]$CreateDate,
-        [switch]$Help
+        [DateTime]$DueDate,
+        [string[]]$Project,
+        [switch]$CreateDate
     )
 
-    if($Help){
-        start "https://github.com/todotxt/todo.txt"
-    }
-
     $TodotxtPath = Get-TodoFile
-
-    if($CreateDate){
-        Out-File -FilePath $TodotxtPath -InputObject $(Get-Date -Format "yyyy-MM-dd ") -Append -NoNewLine
+    $TodoString = ""
+    if($Severity) {
+        $TodoString = "($Severity) "
     }
-
-    Out-File -FilePath $TodotxtPath -InputObject $Item -Append
+    if($CreateDate) {
+        $TodoString += $(Get-Date -Format "yyyy-MM-dd ")
+    }
+    if($DueDate) {
+        $TodoString += "due:" + $DueDate.ToString("yyyy-MM-dd")
+    }
+    $TodoString += $Item
+    foreach($ProjectName in $Project){
+        $TodoString += " +$ProjectName"
+    }
+    Out-File -FilePath $TodotxtPath -InputObject $TodoString -Append
 }
 
 function Get-Todo {
@@ -76,34 +80,97 @@ function Get-Todo {
     param(
         [string]$Find,
         [string]$Severity,
-        [string]$DueDate,
-        [string]$Project,
+        [DateTime]$DueDate,
+        [string[]]$Project,
         [bool]$Exclusive=$false
     )
 
-    $TermList = ($Find,$Severity,$Project)
-
     $TodotxtPath = Get-TodoFile
-
-    if($Find -eq "" -and $Severity -eq "" -and $DueDate -eq "" -and $Project -eq ""){
+    $TempTodoPath = "$ENV:TEMP\44f5a903-73bb-4977-a846-4876e56a4ca7.txt"
+    if($Find -eq "" -and $Severity -eq "" -and $DueDate -eq $null -and $Project.Count -eq 0){
         Get-Content $TodotxtPath
+        Write-Host "Count: $((Get-Content $TodotxtPath).Count)"
+        return
     }
-    else{
-        # Priority is started
-        $SearchTerm = ""
-        $TermCount = 0
-        foreach($Term in $TermList){
-            if($Term -ne ""){
-                if($TermCount -ge 1){
-                    $SearchTerm += "|"
+    $Results
+    if($Find) {
+        Write-Verbose "Searching for items matching $Find"
+        $Results = Select-String $Find $TodotxtPath
+    }
+    else {
+        if($Severity) {
+            Write-Verbose "Searching Severity"
+            $Results = Select-String "($Severity)" -SimpleMatch $TodotxtPath
+            Out-File -FilePath $TempTodoPath -InputObject ($Results).Line
+            $TodotxtPath = $TempTodoPath
+        }
+        if($DueDate){
+            Write-Verbose ("Searching for items with due date " + $DueDate.ToString("yyyy-MM-dd"))
+            $Results = Select-String $("due:" + $DueDate.ToString("yyyy-MM-dd")) -SimpleMatch $TodotxtPath
+            Out-File -FilePath $TempTodoPath -InputObject ($Results).Line
+            $TodotxtPath = $TempTodoPath
+        }
+        if($Project){
+
+            $SearchTerm = ""
+            $TermCount = 0
+
+            foreach($ProjectName in $Project)
+            {
+                if($TermCount -eq 0) {
+                    $SearchTerm = "\+$ProjectName"
                 }
-                $SearchTerm += $Term
+                else {
+                    $SearchTerm += "|\+$ProjectName"
+                }
                 $TermCount++
             }
+            Write-Verbose "Searching for items with search term: $SearchTerm"
+            $Results = Select-String $SearchTerm $TodotxtPath
         }
-        Write-Verbose "Using search term $SearchTerm, Term Count: $TermCount"
-        # TODO(will): think how to handle due dates
-        (Select-String $SearchTerm $TodotxtPath).Line
+    }
+
+    $Count = 0
+    foreach($Item in $Results) {
+        if($Item.Line.StartsWith("//") -or $Item.Line.StartsWith("x")) {
+            continue
+        }
+        else{
+            Write-host $Item.Line
+           $Count++
+        }
+    }
+    Write-Host "Count: $Count"
+}
+
+# Think about how to handle this case... and maybe allow pipe?
+function Complete-Todo {
+    [CmdletBinding()]
+    param(
+        [string]$Item,
+        [int]$Number,
+        [switch]$Confirm
+    )
+    $TodotxtPath = Get-TodoFile
+    if($Item -eq ""){
+        $i = 1
+        $TodoList = New-Object -TypeName "System.Collections.ArrayList"
+        Get-Content $TodotxtPath | ForEach-Object {
+            if(!$_.StartsWith("//") -and $_.StartsWith("x ")){
+                Write-Host "$i) $_"
+                $TodoList.Add($_)
+                $i++
+            }
+        }
+
+        [int]$s = Read-Host -Prompt "Item number: "
+        if($s -gt $i -or $s -lt 0){
+            Write-Error "Invalid Selection"
+            return
+        }
+        $SelectedItem = $TodoList[$s]
+        (Select-String $SelectedItem -SimpleMatch $TodotxtPath).LineNumber
+
     }
 }
 
